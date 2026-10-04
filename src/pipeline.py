@@ -2,7 +2,7 @@ from __future__ import annotations
 
 """Production RAG Pipeline — Ghép toàn bộ M1+M2+M3+M4+M5."""
 
-import os, sys, time
+import os, sys, time, json
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8")
 if hasattr(sys.stderr, "reconfigure"):
@@ -31,8 +31,11 @@ def build_pipeline():
     all_chunks = []
     for doc in docs:
         parents, children = chunk_hierarchical(doc["text"], metadata=doc["metadata"])
+        parent_texts = {parent.parent_id: parent.text for parent in parents}
         for child in children:
-            all_chunks.append({"text": child.text, "metadata": {**child.metadata, "parent_id": child.parent_id}})
+            all_chunks.append({"text": child.text, "metadata": {**child.metadata,
+                               "parent_id": f"{doc['metadata']['source']}:{child.parent_id}",
+                               "parent_text": parent_texts[child.parent_id]}})
     print(f"  ✓ {len(all_chunks)} chunks from {len(docs)} documents ({time.time()-t0:.1f}s)", flush=True)
 
     # Step 2: Enrichment (M5)
@@ -66,7 +69,8 @@ def run_query(query: str, search: HybridSearch, reranker: CrossEncoderReranker) 
     results = search.search(query)
     docs = [{"text": r.text, "score": r.score, "metadata": r.metadata} for r in results]
     reranked = reranker.rerank(query, docs, top_k=RERANK_TOP_K)
-    contexts = [r.text for r in reranked] if reranked else [r.text for r in results[:3]]
+    selected = reranked if reranked else results[:RERANK_TOP_K]
+    contexts = list(dict.fromkeys(r.metadata.get("parent_text", r.text) for r in selected))
 
     from config import OPENAI_API_KEY
     if OPENAI_API_KEY and contexts:
@@ -103,6 +107,11 @@ def evaluate_pipeline(search: HybridSearch, reranker: CrossEncoderReranker):
 
     t0 = time.time()
     print(f"\n[Eval] Running RAGAS (4 metrics × {len(test_set)} questions)...", flush=True)
+    os.makedirs("reports", exist_ok=True)
+    with open("reports/production_answers.json", "w", encoding="utf-8") as handle:
+        json.dump([{"question": q, "answer": a, "contexts": c, "ground_truth": g}
+                   for q, a, c, g in zip(questions, answers, all_contexts, ground_truths)],
+                  handle, ensure_ascii=False, indent=2)
     results = evaluate_ragas(questions, answers, all_contexts, ground_truths)
     print(f"  ✓ RAGAS done ({time.time()-t0:.1f}s)", flush=True)
 

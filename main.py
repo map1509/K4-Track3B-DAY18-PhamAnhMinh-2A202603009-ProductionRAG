@@ -24,6 +24,16 @@ def main():
     print("=" * 60)
     start = time.time()
 
+    # Validate credentials before expensive indexing or repeated API calls.
+    from config import OPENAI_API_KEY
+    if not OPENAI_API_KEY:
+        raise RuntimeError("Set OPENAI_API_KEY in .env to run real RAGAS evaluation")
+    from openai import OpenAI
+    try:
+        OpenAI(api_key=OPENAI_API_KEY, timeout=15, max_retries=0).models.list()
+    except Exception as exc:
+        raise RuntimeError(f"OpenAI preflight failed ({type(exc).__name__}); check .env and connectivity") from None
+
     os.makedirs("reports", exist_ok=True)
 
     # Step 1: Basic Baseline
@@ -31,6 +41,11 @@ def main():
     print("-" * 40)
     from naive_baseline import main as run_baseline
     run_baseline()
+
+    with open("reports/naive_baseline_report.json", encoding="utf-8") as handle:
+        baseline_report = json.load(handle)
+    if baseline_report.get("status") != "completed":
+        raise RuntimeError("Baseline RAGAS did not complete; inspect its report before comparing scores")
 
     # Step 2: Production Pipeline
     print("\n📌 STEP 2: Running Production Pipeline...")
@@ -56,6 +71,8 @@ def main():
         with open(prod_path, encoding="utf-8") as f:
             prod = json.load(f)
 
+        if prod.get("status") != "completed":
+            raise RuntimeError("Production RAGAS did not complete; scores are unavailable")
         print(f"\n{'Metric':<25} {'Basic':>8} {'Production':>12} {'Δ':>8}")
         print("-" * 55)
         for m in ["faithfulness", "answer_relevancy", "context_precision", "context_recall"]:
